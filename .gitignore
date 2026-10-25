@@ -1,0 +1,8 @@
+# Documentos locales (enunciados e informe)
+*.pdf
+*.md
+docs/
+
+# Sistema y Jupyter
+.DS_Store
+.ipynb_checkpoints/
