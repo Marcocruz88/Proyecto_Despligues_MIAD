@@ -16,21 +16,19 @@ from variables import NUMERICAS, CATEGORICAS, COLUMNAS, agrupar_raras, agregar_d
 # Cargar modelo
 modelo = XGBClassifier()
 modelo.load_model("Dash/app/xgboost_dropout.json")      
-
-
 columnas_modelo = modelo.get_booster().feature_names
 
 
-# Campos del formulario: el id de cada componente es el nombre de la columna
+# Campos 
 CAMPOS = list(CATEGORICAS) + list(NUMERICAS)
-# Columnas que se convirtieron a dummies al entrenar
 COLS_DUMMY = list(CATEGORICAS) + ["estado_1st", "estado_2nd"]
 
 
-# Preprocesamiento (igual que en el entrenamiento) y predicción
+# Preprocesamiento 
 def preparar(df):
     df = agregar_derivadas(agrupar_raras(df))
-    X = pd.get_dummies(df[COLUMNAS], columns=COLS_DUMMY, drop_first=True)
+    X = pd.get_dummies(df[COLUMNAS], columns=COLS_DUMMY)
+    X = X.reindex(columns=columnas_modelo, fill_value=0)   # mismas columnas y orden que el modelo
     return X.astype(float)
 
 
@@ -38,18 +36,13 @@ def predecir(df):
     return modelo.predict_proba(preparar(df))[:, 1]
 
 
-def nivel_riesgo(p):
-    if p < 0.33:
-        return "Bajo"
-    if p < 0.66:
-        return "Medio"
-    return "Alto"
+UMBRAL = 0.5
+ 
+ 
+def hay_desercion(p):
+    return p >= UMBRAL
 
-
-COLOR_NIVEL = {"Bajo": "#d4edda", "Medio": "#fff3cd", "Alto": "#f8d7da"}
-
-
-# Crea un campo del formulario (lista desplegable o número) a partir de variables.py
+# Generacion de Campos
 def crear_campo(col):
     if col in CATEGORICAS:
         etiqueta, opciones = CATEGORICAS[col]
@@ -62,7 +55,7 @@ def crear_campo(col):
         control
     ], width=4)
 
-
+## Generacion de columnas 
 filas_formulario = [
     dbc.Row([crear_campo(c) for c in CAMPOS[i:i + 2]], className="mb-2", style={"justifyContent": "center"})
     for i in range(0, len(CAMPOS), 2)
@@ -110,10 +103,7 @@ app.layout = dbc.Container([
 
         html.Br(),
 
-        # Campos generados desde variables.py
-        *filas_formulario
-
-    ]),
+    ] + filas_formulario),
 
     html.Div(id="tab2-content", children=[
         html.Br(),
@@ -157,7 +147,7 @@ app.layout = dbc.Container([
 
         html.Div([
             dbc.Alert(
-                "Por favor, adjunte los datos de los estudiantes a predecir en un archivo .xlsx con la primera fila con el nombre de la variable.",
+                "Por favor, adjunte los datos de los estudiantes a predecir en un archivo .xlsx o .csv con la primera fila con el nombre de la variable.",
                 id="mensaje-carga",
                 color="info",
                 className="text-center",
@@ -175,14 +165,20 @@ app.layout = dbc.Container([
 
         dbc.Row([
             dbc.Col([
-                html.Div(
-                    dbc.Button("🔄 Reiniciar", id="boton-reiniciar-masiva", color="secondary", className="mt-2"),
-                    className="d-flex justify-content-end"
-                ),
-                html.Div(id='output-table'),
+                dbc.Row([
+                    dbc.Col([
+                        html.Label("Número de estudiantes a priorizar", style={"color": "white", "fontWeight": "bold", "fontSize": "20px"}),
+                        dcc.Input(id="n-casos", type="number", min=1, step=1, debounce=True, style={"width": "100%"})
+                    ], width=4),
+                    dbc.Col(
+                        dbc.Button("🔄 Reiniciar", id="boton-reiniciar-masiva", color="secondary"),
+                        className="d-flex justify-content-end align-items-end"
+                    )
+                ], className="mt-2"),
+
                 dcc.Upload(
                     id='upload-data',
-                    children=html.Div(['Arrastra o haz click para cargar el archivo .xlsx'], style={"color": "#ffffff", "fontWeight": "bold"}),
+                    children=html.Div(['Arrastra o haz click para cargar el archivo (.xlsx o .csv)'], style={"color": "#ffffff", "fontWeight": "bold"}),
 
                     style={
                         'width': '100%', 'height': '60px', 'lineHeight': '60px',
@@ -190,7 +186,9 @@ app.layout = dbc.Container([
                         'textAlign': 'center', 'margin': '10px', 'backgroundColor': '#154360'
                     },
                     multiple=False
-                )
+                ),
+
+                html.Div(id='output-table')
             ])
         ])
     ], style={"display": "none"})
@@ -212,7 +210,7 @@ def alternar_pestanas(tab):
     ]
 
 
-# Callback para reiniciar todos los campos de la pestaña de entrada individual
+# Callback para reiniciar 
 @app.callback(
     [Output(c, "value") for c in CAMPOS],
     Input("boton-reiniciar-individual-tab1", "n_clicks"),
@@ -220,9 +218,9 @@ def alternar_pestanas(tab):
 )
 def reiniciar_campos(n_clicks):
     return [None] * len(CAMPOS)
-
-
-# Callback para ejecutar la predicción individual y mostrar mensaje de reinicio en la pestaña de resultados
+ 
+ 
+# Callback para ejecutar la predicción individual 
 @app.callback(
     Output("resultado-prediccion", "children"),
     [Input("boton-predecir", "n_clicks"),
@@ -233,9 +231,9 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
     ctx = callback_context
     if not ctx.triggered:
         return no_update
-
+ 
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
+ 
     if trigger_id == "boton-reiniciar-individual":
         return dbc.Alert(
             ["ℹ️ Aún no se ha realizado ninguna predicción.",
@@ -244,13 +242,13 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
             color="info",
             className="text-center"
         )
-
+ 
     datos_dict = dict(zip(CAMPOS, inputs))
-
+ 
     # Validar que no haya campos vacíos
     if any(valor is None or valor == '' for valor in datos_dict.values()):
         return dbc.Alert("⚠️ Por favor completa todos los campos.", color="warning")
-
+ 
     # Validar rangos y coherencia (aprobadas <= inscritas, nota 0 solo si no aprobó)
     errores = []
     for col, (etiqueta, minimo, maximo) in NUMERICAS.items():
@@ -260,29 +258,23 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
         errores = validar(datos_dict)
     if errores:
         return dbc.Alert([html.Div("⚠️ " + e) for e in errores], color="warning")
-
+ 
     # Realizar predicción
     df_input = pd.DataFrame([datos_dict])
     probabilidad = round(float(predecir(df_input)[0]), 3)
-    nivel = nivel_riesgo(probabilidad)
-
+ 
     # Mostrar resultado
-    if nivel == "Alto":
+    if hay_desercion(probabilidad):
         color_card = "danger"
         icono = "❌"
-        titulo = "Riesgo Alto de Deserción"
-        mensaje = "Alta probabilidad de que el estudiante abandone.\nRecomendamos un seguimiento prioritario."
-    elif nivel == "Medio":
-        color_card = "warning"
-        icono = "⚠️"
-        titulo = "Riesgo Medio de Deserción"
-        mensaje = "Hay señales de riesgo.\nRecomendamos hacer seguimiento."
+        titulo = "Riesgo de Deserción Detectado"
+        mensaje = "Se espera que el estudiante abandone.\nRecomendamos un seguimiento prioritario."
     else:
         color_card = "success"
         icono = "✅"
-        titulo = "Riesgo Bajo de Deserción"
-        mensaje = "No se espera que el estudiante abandone.\nBajo riesgo de deserción."
-
+        titulo = "Sin Riesgo de Deserción"
+        mensaje = "No se espera que el estudiante abandone."
+ 
     # Gráfico tipo gauge
     gauge_fig = go.Figure(go.Indicator(
         mode="gauge+number",
@@ -292,9 +284,8 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
             'axis': {'range': [0, 100]},
             'bar': {'color': "black"},
             'steps': [
-                {'range': [0, 33], 'color': '#d4edda'},
-                {'range': [33, 66], 'color': '#fff3cd'},
-                {'range': [66, 100], 'color': '#f8d7da'}
+                {'range': [0, UMBRAL * 100], 'color': '#d4edda'},
+                {'range': [UMBRAL * 100, 100], 'color': '#f8d7da'}
             ],
             'threshold': {
                 'line': {'color': "red", 'width': 4},
@@ -303,7 +294,7 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
             }
         }
     ))
-
+ 
     return dbc.Card(
         dbc.CardBody([
             html.H1(icono, className="text-center", style={"fontSize": "90px"}),
@@ -316,61 +307,80 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
         inverse=True,
         className="mt-4"
     )
-
-
-# Callback para cargar archivo Excel en la pestaña de revisión masiva, predecir y mostrar tabla de resultados
+ 
+ 
+# Callback para cargar archivo Excel 
 @app.callback(
     [Output('output-table', 'children'),
      Output('mensaje-carga', 'is_open'),
      Output('mensaje-exito', 'is_open')],
     [Input('upload-data', 'contents'),
-     Input('boton-reiniciar-masiva', 'n_clicks')],
+     Input('boton-reiniciar-masiva', 'n_clicks'),
+     Input('n-casos', 'value')],
     [State('upload-data', 'filename')],
     prevent_initial_call=True
 )
-def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, filename):
+def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
     ctx = callback_context
     if not ctx.triggered:
         raise PreventUpdate
-
+ 
     trigger = ctx.triggered[0]['prop_id'].split('.')[0]
-
+ 
     if trigger == 'boton-reiniciar-masiva':
         return None, True, False
-
+ 
     if contents is None:
         return None, True, False
-
+ 
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
-    df = pd.read_excel(io.BytesIO(decoded))
+
+    try:
+        if filename.lower().endswith(".csv"):
+            # sep=None detecta si el separador es coma o punto y coma
+            df = pd.read_csv(io.BytesIO(decoded), sep=None, engine="python", encoding="utf-8-sig")
+        elif filename.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(decoded))
+        else:
+            return dbc.Alert("Formato no soportado. Sube un archivo .xlsx o .csv.", color="warning"), False, False
+    except Exception as e:
+        return dbc.Alert(f"No se pudo leer el archivo: {e}", color="danger"), False, False
 
     if df.empty:
         return dbc.Alert("El archivo está vacío o no tiene columnas.", color="warning"), False, False
-
+ 
     try:
         df.columns = df.columns.astype(str).str.strip()
-
+ 
         # El Excel debe traer las columnas del formulario
         faltan = [c for c in CAMPOS if c not in df.columns]
         if faltan:
             return dbc.Alert(f"Faltan columnas en el archivo: {', '.join(faltan)}", color="danger"), False, False
-
+ 
         df = df[CAMPOS]
         if df.isna().any().any():
             return dbc.Alert("El archivo tiene celdas vacías. Completa todos los datos.", color="warning"), False, False
-
+ 
         # Validar coherencia fila por fila
         for i, fila in df.iterrows():
             errores = validar(fila.to_dict())
             if errores:
                 return dbc.Alert(f"Fila {i + 2} del Excel: {errores[0]}", color="warning"), False, False
-
+ 
         probs = predecir(df)
-
+ 
         df_resultado = df.copy()
         df_resultado['Probabilidad'] = np.round(probs, 3)
-        df_resultado['Resultado'] = [nivel_riesgo(p) for p in probs]
+        df_resultado['Resultado'] = np.where(probs >= UMBRAL, "Deserción", "No deserción")
+
+        # Ordenar de mayor a menor probabilidad y marcar los N primeros como prioridad
+        df_resultado = df_resultado.sort_values('Probabilidad', ascending=False, kind="stable").reset_index(drop=True)
+        try:
+            n = min(max(int(n_casos), 0), len(df_resultado))
+        except (TypeError, ValueError):
+            n = 0
+        df_resultado.insert(0, 'Prioridad', [str(i + 1) if i < n else "—" for i in range(len(df_resultado))])
 
         # Tabla estilizada
         header = [html.Th(col) for col in df_resultado.columns]
@@ -379,20 +389,27 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, filename):
             fila = []
             for col in df_resultado.columns:
                 valor = df_resultado.iloc[i][col]
-                if col == "Resultado":
-                    icono = {"Alto": "❌", "Medio": "⚠️", "Bajo": "✅"}[valor]
+                if col == "Prioridad":
+                    estilo = {"backgroundColor": "#ffc107", "color": "black", "fontWeight": "bold", "textAlign": "center", "verticalAlign": "middle"} if i < n else {"textAlign": "center", "verticalAlign": "middle"}
+                    fila.append(html.Td(valor, style=estilo))
+                elif col == "Resultado":
+                    es_desercion = valor == "Deserción"
+                    icono = "❌" if es_desercion else "✅"
+                    color = "#f8d7da" if es_desercion else "#d4edda"
                     fila.append(html.Td(
                         html.Div([
                             html.Div(icono, style={"fontSize": "26px", "fontWeight": "bold"}),
-                            html.Div(f"Riesgo {valor.lower()}", style={"fontSize": "15px", "color": "black"})
+                            html.Div(valor, style={"fontSize": "15px", "color": "black"})
                         ], style={"textAlign": "center"}),
                         style={
-                            "backgroundColor": COLOR_NIVEL[valor],
+                            "backgroundColor": color,
                             "verticalAlign": "middle"
                         }
                     ))
                 else:
-                    fila.append(html.Td(str(valor)))
+                    # las filas prioritarias llevan un fondo amarillo suave
+                    estilo = {"backgroundColor": "rgba(255, 193, 7, 0.25)"} if i < n else {}
+                    fila.append(html.Td(str(valor), style=estilo))
             rows.append(html.Tr(fila))
 
         tabla = dbc.Table(
@@ -400,10 +417,29 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, filename):
             striped=True, bordered=True, hover=True, responsive=True
         )
 
-        return tabla, False, True
+        if n == 0:
+            texto_resumen = (f"Se muestran los {len(df_resultado)} estudiantes de mayor a menor probabilidad de deserción. "
+                             "Escribe cuántos casos puedes revisar para resaltar los prioritarios.")
+        else:
+            texto_resumen = (f"Se muestran los {len(df_resultado)} estudiantes de mayor a menor probabilidad de deserción. "
+                             f"Los {n} primeros (resaltados) son los que conviene revisar primero.")
+        resumen = html.P(texto_resumen, className="text-light mt-3")
 
+        return html.Div([resumen, tabla]), False, True
+ 
     except Exception as e:
         return dbc.Alert(f"Error procesando el archivo: {e}", color="danger"), False, False
+ 
+ 
+# Callback para reiniciar la carga de archivo
+@app.callback(
+    [Output('upload-data', 'contents'),
+     Output('n-casos', 'value')],
+    Input('boton-reiniciar-masiva', 'n_clicks'),
+    prevent_initial_call=True
+)
+def limpiar_archivo(n_clicks):
+    return None, None
 
 
 # Correr app
