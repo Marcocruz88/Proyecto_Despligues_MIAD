@@ -28,7 +28,7 @@ OCUPACION = {
     -1: "Otro (agrupado)",
 }
 
-## Campos numericos, se ingresan a mano
+
 NUMERICAS = {
     "Age at enrollment": ("Edad al ingresar", 16, 80),
     "Application order": ("Orden de preferencia de la carrera (0 = primera opción)", 0, 9),
@@ -42,20 +42,11 @@ NUMERICAS = {
     "Curricular units 1st sem (grade)": ("1.er semestre · Nota promedio (0–20)", 0, 20),
     "Curricular units 1st sem (without evaluations)": ("1.er semestre · Unidades sin evaluación", 0, 60),
 
-    "Curricular units 2nd sem (credited)": ("2.º semestre · Unidades reconocidas", 0, 60),
-    "Curricular units 2nd sem (enrolled)": ("2.º semestre · Unidades inscritas", 0, 60),
-    "Curricular units 2nd sem (evaluations)": ("2.º semestre · Evaluaciones presentadas", 0, 100),
-    "Curricular units 2nd sem (approved)": ("2.º semestre · Unidades aprobadas", 0, 60),
-    "Curricular units 2nd sem (grade)": ("2.º semestre · Nota promedio (0–20)", 0, 20),
-    "Curricular units 2nd sem (without evaluations)": ("2.º semestre · Unidades sin evaluación", 0, 60),
-
     "Unemployment rate": ("Tasa de desempleo (%)", 0, 30),
     "Inflation rate": ("Tasa de inflación (%)", -5, 20),
     "GDP": ("PIB", -15, 15),
 }
 
-# ---------- Campos que se ELIGEN: columna -> (etiqueta, {código: texto}) ----------
-# El -1 es la categoría "Otro" con la que se agruparon las categorías raras.
 CATEGORICAS = {
     "Gender": ("Género", {0: "Femenino", 1: "Masculino"}),
     "Marital status": ("Estado civil", {1: "Soltero(a)", 2: "Casado(a)", 4: "Divorciado(a)", -1: "Otro (agrupado)"}),
@@ -64,9 +55,6 @@ CATEGORICAS = {
     "Father's qualification": ("Estudios del padre", {k: t for k, t in ESTUDIOS.items() if k != 4}), 
     "Mother's occupation": ("Ocupación de la madre", {k: t for k, t in OCUPACION.items() if k not in (8, 10)}),  
     "Father's occupation": ("Ocupación del padre", OCUPACION),
-    "Debtor": ("Tiene deudas con la institución", SI_NO),
-    "Tuition fees up to date": ("Matrícula al día", SI_NO),
-    "Scholarship holder": ("Becario", SI_NO),
     "Course": ("Programa académico", {
         171: "Diseño de animación y multimedia", 8014: "Servicio social (nocturno)", 9003: "Agronomía",
         9070: "Diseño de comunicación", 9085: "Enfermería veterinaria", 9119: "Ingeniería informática",
@@ -88,20 +76,16 @@ CATEGORICAS = {
 }
 
 
-COLUMNAS = [
+COLUMNAS = [    # las 27 columnas del model.pkl, en el mismo orden
     "Marital status", "Application mode", "Application order", "Course",
     "Daytime/evening attendance", "Previous qualification", "Previous qualification (grade)",
     "Mother's qualification", "Father's qualification", "Mother's occupation", "Father's occupation",
-    "Admission grade", "Displaced", "Debtor", "Tuition fees up to date", "Gender",
-    "Scholarship holder", "Age at enrollment",
+    "Admission grade", "Displaced", "Gender", "Age at enrollment",
     "Curricular units 1st sem (credited)", "Curricular units 1st sem (enrolled)",
     "Curricular units 1st sem (evaluations)", "Curricular units 1st sem (approved)",
     "Curricular units 1st sem (grade)", "Curricular units 1st sem (without evaluations)",
-    "Curricular units 2nd sem (credited)", "Curricular units 2nd sem (enrolled)",
-    "Curricular units 2nd sem (evaluations)", "Curricular units 2nd sem (approved)",
-    "Curricular units 2nd sem (grade)", "Curricular units 2nd sem (without evaluations)",
     "Unemployment rate", "Inflation rate", "GDP",
-    "estado_1st", "estado_2nd", "es_adulto", "tasa_aprob_1st", "tasa_aprob_2nd",
+    "estado_1st", "es_adulto", "tasa_aprob_1st",
 ]
 
 
@@ -116,9 +100,9 @@ def agrupar_raras(df):
 
 
 def agregar_derivadas(df):
-    """Crea estado_1st/2nd, tasa_aprob_1st/2nd y es_adulto."""
+    """Crea estado_1st, tasa_aprob_1st y es_adulto."""
     df = df.copy()
-    for s in ("1st", "2nd"):
+    for s in ("1st",):
         p = f"Curricular units {s} sem ("
         inscritas, evals, aprobadas = df[p + "enrolled)"], df[p + "evaluations)"], df[p + "approved)"]
         df[f"estado_{s}"] = np.select(
@@ -135,7 +119,7 @@ def agregar_derivadas(df):
 def validar(d):
     """d = {columna: valor}. Devuelve una lista de errores (vacía = todo bien)."""
     errores = []
-    for s, nombre in (("1st", "Primer"), ("2nd", "Segundo")):
+    for s, nombre in (("1st", "Primer"),):
         p = f"Curricular units {s} sem ("
         if d[p + "approved)"] > d[p + "enrolled)"]:
             errores.append(f"{nombre} semestre: las unidades aprobadas no pueden superar las inscritas.")

@@ -2,43 +2,33 @@ from dash import Dash, html, dcc, Input, Output, State
 import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
-import json
 import base64
 import io
-from xgboost import XGBClassifier
 import plotly.graph_objects as go
 from dash.exceptions import PreventUpdate
 from dash import no_update, callback_context
-
+import joblib
 from variables import NUMERICAS, CATEGORICAS, COLUMNAS, agrupar_raras, agregar_derivadas, validar
 
 
 # Cargar modelo
-modelo = XGBClassifier()
-modelo.load_model("Dash/app/xgboost_dropout.json")      
-columnas_modelo = modelo.get_booster().feature_names
+modelo = joblib.load("Dash/app/model.pkl")
+columnas_modelo = list(modelo.feature_names_in_)
 
 
 # Campos 
 CAMPOS = list(CATEGORICAS) + list(NUMERICAS)
-COLS_DUMMY = list(CATEGORICAS) + ["estado_1st", "estado_2nd"]
 
 
 # Preprocesamiento 
 def preparar(df):
     df = agregar_derivadas(agrupar_raras(df))
-    X = pd.get_dummies(df[COLUMNAS], columns=COLS_DUMMY)
-    X = X.reindex(columns=columnas_modelo, fill_value=0)   # mismas columnas y orden que el modelo
-    return X.astype(float)
-
+    return df[columnas_modelo]     
 
 def predecir(df):
     return modelo.predict_proba(preparar(df))[:, 1]
 
-
 UMBRAL = 0.5
- 
- 
 def hay_desercion(p):
     return p >= UMBRAL
 
@@ -188,7 +178,8 @@ app.layout = dbc.Container([
                     multiple=False
                 ),
 
-                html.Div(id='output-table')
+                html.Div(id='output-table'),
+                dcc.Download(id="descarga")
             ])
         ])
     ], style={"display": "none"})
@@ -249,7 +240,7 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
     if any(valor is None or valor == '' for valor in datos_dict.values()):
         return dbc.Alert("⚠️ Por favor completa todos los campos.", color="warning")
  
-    # Validar rangos y coherencia (aprobadas <= inscritas, nota 0 solo si no aprobó)
+    # Validar rangos y coherencia (aprobadas <= inscritas)
     errores = []
     for col, (etiqueta, minimo, maximo) in NUMERICAS.items():
         if not minimo <= datos_dict[col] <= maximo:
@@ -275,7 +266,7 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
         titulo = "Sin Riesgo de Deserción"
         mensaje = "No se espera que el estudiante abandone."
  
-    # Gráfico tipo gauge
+    # Gráfico tipo 
     gauge_fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=probabilidad * 100,
@@ -338,7 +329,6 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
 
     try:
         if filename.lower().endswith(".csv"):
-            # sep=None detecta si el separador es coma o punto y coma
             df = pd.read_csv(io.BytesIO(decoded), sep=None, engine="python", encoding="utf-8-sig")
         elif filename.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(io.BytesIO(decoded))
@@ -353,7 +343,6 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
     try:
         df.columns = df.columns.astype(str).str.strip()
  
-        # El Excel debe traer las columnas del formulario
         faltan = [c for c in CAMPOS if c not in df.columns]
         if faltan:
             return dbc.Alert(f"Faltan columnas en el archivo: {', '.join(faltan)}", color="danger"), False, False
@@ -362,7 +351,6 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
         if df.isna().any().any():
             return dbc.Alert("El archivo tiene celdas vacías. Completa todos los datos.", color="warning"), False, False
  
-        # Validar coherencia fila por fila
         for i, fila in df.iterrows():
             errores = validar(fila.to_dict())
             if errores:
@@ -374,7 +362,7 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
         df_resultado['Probabilidad'] = np.round(probs, 3)
         df_resultado['Resultado'] = np.where(probs >= UMBRAL, "Deserción", "No deserción")
 
-        # Ordenar de mayor a menor probabilidad y marcar los N primeros como prioridad
+        # Ordenar de mayor a menor probabilidad
         df_resultado = df_resultado.sort_values('Probabilidad', ascending=False, kind="stable").reset_index(drop=True)
         try:
             n = min(max(int(n_casos), 0), len(df_resultado))
@@ -382,7 +370,7 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
             n = 0
         df_resultado.insert(0, 'Prioridad', [str(i + 1) if i < n else "—" for i in range(len(df_resultado))])
 
-        # Tabla estilizada
+        # Tabla 
         header = [html.Th(col) for col in df_resultado.columns]
         rows = []
         for i in range(len(df_resultado)):
@@ -407,7 +395,6 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
                         }
                     ))
                 else:
-                    # las filas prioritarias llevan un fondo amarillo suave
                     estilo = {"backgroundColor": "rgba(255, 193, 7, 0.25)"} if i < n else {}
                     fila.append(html.Td(str(valor), style=estilo))
             rows.append(html.Tr(fila))
@@ -425,12 +412,155 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
                              f"Los {n} primeros (resaltados) son los que conviene revisar primero.")
         resumen = html.P(texto_resumen, className="text-light mt-3")
 
-        return html.Div([resumen, tabla]), False, True
+        # Botón para descargar los N 
+        boton_descarga = html.Div(
+            dbc.Button(f"⬇️ Descargar los {n} prioritarios (.xlsx)", id="boton-descargar", color="warning"),
+            className="mb-3"
+        ) if n > 0 else None
+
+        tabla_scroll = html.Div(tabla, style={"maxHeight": "450px", "overflowY": "auto"})
+
+        return html.Div([resumen, boton_descarga, tabla_scroll, construir_eda(df_resultado, n)]), False, True
  
     except Exception as e:
         return dbc.Alert(f"Error procesando el archivo: {e}", color="danger"), False, False
  
  
+## Graficas para EDA de los cargados
+COLOR_PRIORIDAD = "#ffc107"
+COLOR_RESTO = "#2aa198"
+ESTADOS = {"normal": "Normal", "no_inscrito": "No inscrito",
+           "inscrito_sin_eval": "Inscrito sin evaluación", "evaluado_sin_aprobar": "Evaluado sin aprobar"}
+
+
+def grafica(fig, titulo):
+    """Da el mismo formato a todas las gráficas y las pone en media fila."""
+    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      title=titulo, height=340, margin=dict(l=10, r=10, t=50, b=10),
+                      legend=dict(orientation="h", y=-0.25))
+    return dbc.Col(dcc.Graph(figure=fig, config={"displayModeBar": False}), md=6)
+
+
+def construir_eda(resultado, n):
+    """resultado: estudiantes ya ordenados de mayor a menor probabilidad, con las columnas del formulario y 'Probabilidad'."""
+    d = agregar_derivadas(agrupar_raras(resultado[CAMPOS]))
+    d["Probabilidad"] = resultado["Probabilidad"].to_numpy()
+    total = len(d)
+
+    if n > 0:
+        nombres = ("Prioritarios", "Resto")
+        d["grupo"] = np.where(np.arange(total) < n, nombres[0], nombres[1])
+    else:
+        nombres = ("Con riesgo", "Sin riesgo")
+        d["grupo"] = np.where(d["Probabilidad"] >= UMBRAL, nombres[0], nombres[1])
+    colores = {nombres[0]: COLOR_PRIORIDAD, nombres[1]: COLOR_RESTO}
+    grupos = [(g, d[d["grupo"] == g]) for g in nombres if (d["grupo"] == g).any()]
+
+    # Tarjetas de resumen
+    con_riesgo = int((d["Probabilidad"] >= UMBRAL).sum())
+
+    def tarjeta(titulo, valor):
+        return dbc.Col(dbc.Card(dbc.CardBody([html.Div(titulo), html.H3(valor)]), className="text-center"),
+                       md=3, className="mb-3")
+
+    kpis = dbc.Row([
+        tarjeta("Estudiantes cargados", f"{total}"),
+        tarjeta("Prioritarios", f"{n}" if n > 0 else "—"),
+        tarjeta("Probabilidad promedio", f"{d['Probabilidad'].mean() * 100:.1f}%"),
+        tarjeta(f"Con riesgo (≥ {UMBRAL * 100:.0f}%)", f"{con_riesgo} ({con_riesgo / total * 100:.0f}%)"),
+    ])
+
+    # 1. Distribución de la probabilidad
+    f1 = go.Figure(go.Histogram(x=d["Probabilidad"] * 100, xbins=dict(start=0, end=100, size=5), marker_color=COLOR_RESTO))
+    f1.add_vline(x=UMBRAL * 100, line_dash="dash", line_color="red", annotation_text="Umbral")
+    if 0 < n < total:
+        f1.add_vline(x=d["Probabilidad"].iloc[n - 1] * 100, line_color=COLOR_PRIORIDAD,
+                     annotation_text="Corte de los N", annotation_position="top left")
+    f1.update_layout(xaxis_title="Probabilidad de deserción (%)", yaxis_title="Estudiantes")
+
+    # 2. Perfil: % de estudiantes con cada característica
+    indicadores = {
+        "Mayor de 25 años": lambda x: x["es_adulto"] == 1,
+        "Sin aprobadas 1.er sem": lambda x: x["Curricular units 1st sem (approved)"] == 0,
+        "Vive lejos de su origen": lambda x: x["Displaced"] == 1,
+        "Jornada nocturna": lambda x: x["Daytime/evening attendance"] == 0,
+        "Hombre": lambda x: x["Gender"] == 1,
+        "1.er sem. no normal": lambda x: x["estado_1st"] != "normal",
+    }
+    f2 = go.Figure([go.Bar(name=g, x=list(indicadores), y=[f(sub).mean() * 100 for f in indicadores.values()],
+                           marker_color=colores[g]) for g, sub in grupos])
+    f2.update_layout(barmode="group", yaxis_title="% de estudiantes", yaxis_range=[0, 100])
+
+    # 3. Estudiantes por programa (los 8 más frecuentes)
+    programa = d["Course"].map(lambda c: CATEGORICAS["Course"][1].get(c, str(c)))
+    top = programa.value_counts().head(8).index
+    f3 = go.Figure([go.Bar(name=g, y=top, x=[(programa[sub.index] == p).sum() for p in top], orientation="h",
+                           marker_color=colores[g]) for g, sub in grupos])
+    f3.update_layout(barmode="stack", xaxis_title="Estudiantes", yaxis=dict(autorange="reversed"),
+                     xaxis_dtick=1 if programa.value_counts().max() <= 8 else None)   # sin medios estudiantes en el eje
+
+    # 4. Estado académico del 1.er semestre
+    f4 = go.Figure([go.Bar(name=g, x=list(ESTADOS.values()), y=[(sub["estado_1st"] == k).sum() for k in ESTADOS],
+                           marker_color=colores[g]) for g, sub in grupos])
+    f4.update_layout(barmode="group", yaxis_title="Estudiantes")
+
+    # 5. Edad al ingresar
+    f5 = go.Figure([go.Histogram(name=g, x=sub["Age at enrollment"], xbins=dict(size=2), marker_color=colores[g], opacity=0.75)
+                    for g, sub in grupos])
+    f5.update_layout(barmode="overlay", xaxis_title="Edad al ingresar", yaxis_title="Estudiantes")
+
+    # 6. Unidades del 1.er semestre (promedio)
+    f6 = go.Figure([go.Bar(name=g, x=["Inscritas", "Aprobadas"],
+                           y=[sub["Curricular units 1st sem (enrolled)"].mean(), sub["Curricular units 1st sem (approved)"].mean()],
+                           marker_color=colores[g]) for g, sub in grupos])
+    f6.update_layout(barmode="group", yaxis_title="Unidades (promedio)")
+
+    return html.Div([
+        html.H4("Perfil de los casos cargados", className="text-light mt-4"),
+        html.P(f"Descripción de los estudiantes del archivo, comparando {nombres[0].lower()} con {nombres[1].lower()}. "
+               "Son descripciones de estos datos.", className="text-light"),
+        kpis,
+        dbc.Row([grafica(f1, "Distribución de la probabilidad de deserción"), grafica(f2, "Perfil: % de estudiantes con cada característica")]),
+        dbc.Row([grafica(f3, "Estudiantes por programa (8 más frecuentes)"), grafica(f4, "Estado académico del 1.er semestre")]),
+        dbc.Row([grafica(f5, "Edad al ingresar"), grafica(f6, "Unidades 1.er semestre (promedio)")]),
+    ])
+
+
+# Callback para descargar en Excel
+@app.callback(
+    Output("descarga", "data"),
+    Input("boton-descargar", "n_clicks"),
+    [State("upload-data", "contents"),
+     State("upload-data", "filename"),
+     State("n-casos", "value")],
+    prevent_initial_call=True
+)
+def descargar_prioritarios(n_clicks, contents, filename, n_casos):
+    if not n_clicks or contents is None or not n_casos:
+        raise PreventUpdate
+
+    decoded = base64.b64decode(contents.split(',')[1])
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(decoded), sep=None, engine="python", encoding="utf-8-sig")
+    else:
+        df = pd.read_excel(io.BytesIO(decoded))
+    df.columns = df.columns.astype(str).str.strip()
+    df = df[CAMPOS]
+
+    probs = predecir(df)
+    resultado = df.copy()
+    resultado['Probabilidad'] = np.round(probs, 3)
+    resultado['Resultado'] = np.where(probs >= UMBRAL, "Deserción", "No deserción")
+    resultado = resultado.sort_values('Probabilidad', ascending=False, kind="stable").reset_index(drop=True)
+
+    n = min(max(int(n_casos), 1), len(resultado))
+    prioritarios = resultado.head(n)
+    prioritarios.insert(0, 'Prioridad', range(1, n + 1))
+
+    return dcc.send_data_frame(prioritarios.to_excel, f"{n}_estudiantes_prioritarios.xlsx",
+                               index=False, sheet_name="Prioritarios")
+
+
 # Callback para reiniciar la carga de archivo
 @app.callback(
     [Output('upload-data', 'contents'),
@@ -440,7 +570,6 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
 )
 def limpiar_archivo(n_clicks):
     return None, None
-
 
 # Correr app
 if __name__ == "__main__":
