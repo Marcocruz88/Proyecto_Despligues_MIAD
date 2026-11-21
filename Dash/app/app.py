@@ -9,7 +9,8 @@ from dash.exceptions import PreventUpdate
 from dash import no_update, callback_context
 import joblib
 from variables import NUMERICAS, CATEGORICAS, COLUMNAS, agrupar_raras, agregar_derivadas, validar
-
+import os
+import requests
 
 # Cargar modelo
 modelo = joblib.load("Dash/app/model.pkl")
@@ -19,6 +20,7 @@ columnas_modelo = list(modelo.feature_names_in_)
 # Campos 
 CAMPOS = list(CATEGORICAS) + list(NUMERICAS)
 
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8001").rstrip("/")
 
 # Preprocesamiento 
 def preparar(df):
@@ -26,7 +28,35 @@ def preparar(df):
     return df[columnas_modelo]     
 
 def predecir(df):
-    return modelo.predict_proba(preparar(df))[:, 1]
+    estudiante = df[CAMPOS].to_dict(orient="records")[0]
+    respuesta = requests.post(
+        f"{API_URL}/predict",
+        json=estudiante,
+        timeout=30,
+    )
+    respuesta.raise_for_status()
+    return [respuesta.json()["probabilidad_desercion"]]
+
+def predecir_lote_api(df):
+    estudiantes = df[CAMPOS].to_dict(orient="records")
+
+    try:
+        respuesta = requests.post(
+            f"{API_URL}/predict-batch",
+            json=estudiantes,
+            timeout=30,
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            "No se pudo enviar el lote a la API. Comprueba que Uvicorn esté corriendo."
+        ) from error
+
+    if respuesta.status_code == 422:
+        detalle = respuesta.json()["detail"]
+        raise ValueError(f"La API rechazó datos del archivo. Detalle: {detalle}")
+
+    respuesta.raise_for_status()
+    return np.asarray(respuesta.json()["probabilidades_desercion"])
 
 UMBRAL = 0.5
 def hay_desercion(p):
@@ -356,7 +386,7 @@ def manejar_carga_y_reinicio(contents, n_clicks_reiniciar, n_casos, filename):
             if errores:
                 return dbc.Alert(f"Fila {i + 2} del Excel: {errores[0]}", color="warning"), False, False
  
-        probs = predecir(df)
+        probs = predecir_lote_api(df)
  
         df_resultado = df.copy()
         df_resultado['Probabilidad'] = np.round(probs, 3)
@@ -547,7 +577,7 @@ def descargar_prioritarios(n_clicks, contents, filename, n_casos):
     df.columns = df.columns.astype(str).str.strip()
     df = df[CAMPOS]
 
-    probs = predecir(df)
+    probs = predecir_lote_api(df)
     resultado = df.copy()
     resultado['Probabilidad'] = np.round(probs, 3)
     resultado['Resultado'] = np.where(probs >= UMBRAL, "Deserción", "No deserción")
