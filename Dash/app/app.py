@@ -7,25 +7,14 @@ import io
 import plotly.graph_objects as go
 from dash.exceptions import PreventUpdate
 from dash import no_update, callback_context
-import joblib
 from variables import NUMERICAS, CATEGORICAS, COLUMNAS, agrupar_raras, agregar_derivadas, validar
 import os
 import requests
-
-# Cargar modelo
-modelo = joblib.load("Dash/app/model.pkl")
-columnas_modelo = list(modelo.feature_names_in_)
-
 
 # Campos 
 CAMPOS = list(CATEGORICAS) + list(NUMERICAS)
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8001").rstrip("/")
-
-# Preprocesamiento 
-def preparar(df):
-    df = agregar_derivadas(agrupar_raras(df))
-    return df[columnas_modelo]     
 
 def predecir(df):
     estudiante = df[CAMPOS].to_dict(orient="records")[0]
@@ -84,6 +73,7 @@ filas_formulario = [
 
 # Inicializar app
 app = Dash(__name__, external_stylesheets=[dbc.themes.SOLAR], suppress_callback_exceptions=True)
+server = app.server  # lo usa gunicorn en el contenedor
 
 
 # Layout principal
@@ -603,4 +593,4 @@ def limpiar_archivo(n_clicks):
 
 # Correr app
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8050")), debug=False)

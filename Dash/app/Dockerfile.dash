@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+# Usuario sin privilegios que ejecuta el tablero
+RUN adduser --disabled-password --gecos '' dash-user
+
+WORKDIR /opt/desercion-dash
+
+# Dependencias del tablero
+COPY requirements_dash.txt ./
+RUN python -m pip install --no-cache-dir -r requirements_dash.txt
+
+# Código del tablero (las predicciones se piden a la API)
+COPY app.py variables.py run_dash.sh ./
+RUN chmod +x run_dash.sh && chown -R dash-user:dash-user ./
+
+USER dash-user
+
+# PORT: puerto del tablero; API_URL: dirección de la API (se puede cambiar en docker run)
+ENV PORT=8050
+ENV API_URL=http://127.0.0.1:8001
+EXPOSE 8050
+
+CMD ["bash", "./run_dash.sh"]
