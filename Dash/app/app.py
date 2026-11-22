@@ -51,6 +51,72 @@ UMBRAL = 0.5
 def hay_desercion(p):
     return p >= UMBRAL
 
+# Valores típicos (moda / mediana de los datos) para estimar los factores de un estudiante
+TIPICOS = {
+    "Gender": 0, "Marital status": 1, "Displaced": 1,
+    "Mother's qualification": 1, "Father's qualification": 37,
+    "Mother's occupation": 9, "Father's occupation": 9,
+    "Course": 9500, "Application mode": 1, "Daytime/evening attendance": 1, "Previous qualification": 1,
+    "Age at enrollment": 20, "Application order": 1,
+    "Previous qualification (grade)": 133.1, "Admission grade": 126.1,
+    "Curricular units 1st sem (credited)": 0, "Curricular units 1st sem (enrolled)": 6,
+    "Curricular units 1st sem (evaluations)": 8, "Curricular units 1st sem (approved)": 5,
+    "Curricular units 1st sem (grade)": 12.3, "Curricular units 1st sem (without evaluations)": 0,
+    "Unemployment rate": 11.1, "Inflation rate": 1.4, "GDP": 0.32,
+}
+
+# Las unidades del 1.er semestre se cambian juntas para que el caso siga siendo coherente
+UNIDADES = [c for c in CAMPOS if c.startswith("Curricular units 1st sem")]
+
+
+def factores_estudiante(datos, top=5):
+    """Cuánto cambia la probabilidad de este estudiante si cada dato fuera el típico (en puntos porcentuales)."""
+    factores = {c: [c] for c in CAMPOS if c not in UNIDADES}
+    factores["Desempeño 1.er semestre"] = UNIDADES
+
+    filas = [dict(datos)]
+    for cols in factores.values():
+        fila = dict(datos)
+        for c in cols:
+            fila[c] = TIPICOS[c]
+        filas.append(fila)
+    probs = predecir_lote_api(pd.DataFrame(filas)[CAMPOS])
+
+    resultado = []
+    for (nombre, cols), p in zip(factores.items(), probs[1:]):
+        if nombre == "Desempeño 1.er semestre":
+            etiqueta = nombre
+        else:
+            c = cols[0]
+            if c in CATEGORICAS:
+                etiqueta = f"{CATEGORICAS[c][0]} ({CATEGORICAS[c][1].get(datos[c], datos[c])})"
+            else:
+                etiqueta = f"{NUMERICAS[c][0]} ({datos[c]})"
+        resultado.append((etiqueta, (probs[0] - p) * 100))
+
+    resultado = [r for r in resultado if abs(r[1]) >= 0.05]
+    resultado = sorted(resultado, key=lambda r: abs(r[1]), reverse=True)[:top]
+    if not resultado:
+        return None
+
+    fig = go.Figure(go.Bar(
+        y=[r[0] for r in resultado], x=[r[1] for r in resultado], orientation="h",
+        marker_color=["#dc3545" if r[1] > 0 else "#28a745" for r in resultado],
+        text=[f"{r[1]:+.1f} pts" for r in resultado], textposition="auto"))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      height=60 * len(resultado) + 90, margin=dict(l=10, r=10, t=10, b=40),
+                      yaxis=dict(autorange="reversed"), xaxis_title="Cambio en la probabilidad (puntos porcentuales)")
+    return dbc.Card(dbc.CardBody([
+        html.H4("Top 5: factores que más influyen en este estudiante", className="text-center"),
+        html.P("🔴 aumentan el riesgo · 🟢 lo disminuyen.", className="text-center mb-1"),
+        html.P("Cada barra indica cuántos puntos porcentuales cambiaría la probabilidad de deserción de este estudiante "
+               "si ese dato fuera el de un estudiante típico. Por ejemplo, +4 pts significa que ese dato sube la probabilidad "
+               "4 puntos frente a un caso típico.",
+               className="text-center", style={"fontSize": "14px"}),
+        dcc.Graph(figure=fig, config={"displayModeBar": False}),
+    ]), className="mt-3")
+
+
 # Generacion de Campos
 def crear_campo(col):
     if col in CATEGORICAS:
@@ -278,12 +344,12 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
     if hay_desercion(probabilidad):
         color_card = "danger"
         icono = "❌"
-        titulo = "Riesgo de Deserción Detectado"
+        titulo = "Riesgo detectado"
         mensaje = "Se espera que el estudiante abandone.\nRecomendamos un seguimiento prioritario."
     else:
         color_card = "success"
         icono = "✅"
-        titulo = "Sin Riesgo de Deserción"
+        titulo = "Sin riesgo"
         mensaje = "No se espera que el estudiante abandone."
  
     # Gráfico tipo 
@@ -306,7 +372,12 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
         }
     ))
  
-    return dbc.Card(
+    try:
+        tarjeta_factores = factores_estudiante(datos_dict)
+    except Exception:
+        tarjeta_factores = None   # si falla, igual se muestra la predicción
+
+    tarjeta_resultado = dbc.Card(
         dbc.CardBody([
             html.H1(icono, className="text-center", style={"fontSize": "90px"}),
             html.H2(titulo, className="text-center"),
@@ -318,6 +389,8 @@ def manejar_prediccion(n_clicks_predecir, n_clicks_reiniciar, *inputs):
         inverse=True,
         className="mt-4"
     )
+
+    return html.Div([tarjeta_resultado, tarjeta_factores])
  
  
 # Callback para cargar archivo Excel 
